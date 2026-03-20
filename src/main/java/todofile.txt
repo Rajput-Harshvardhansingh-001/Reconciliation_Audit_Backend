@@ -1,0 +1,459 @@
+ architectural blueprint for implementation.*
+
+---
+
+## 1. High-Level Architecture Overview
+
+Think of this as a **3-Layer Cake**:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        CLIENT LAYER                                  │
+│  ┌─────────────────────┐         ┌─────────────────────┐           │
+│  │   React/Angular     │         │   React/Angular     │           │
+│  │   (Dashboard)       │         │   (Upload & Match)  │           │
+│  └─────────┬───────────┘         └──────────┬──────────┘           │
+└────────────┼──────────────────────────────────┼────────────────────┘
+             │                                  │
+             │   REST API (HTTPS)              │
+             │   JSON Data                     │
+┌────────────┼──────────────────────────────────┼────────────────────┐
+│            ▼                                  ▼                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                    SPRING BOOT APPLICATION                   │    │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │    │
+│  │  │ Auth Module  │  │ Transaction  │  │ Audit Service    │   │    │
+│  │  │ (Security)   │  │ Service      │  │ (Logging)        │   │    │
+│  │  └──────────────┘  └──────────────┘  └──────────────────┘   │    │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │    │
+│  │  │ File Upload  │  │ Matching    │  │ Report Service   │   │    │
+│  │  │ Service      │  │ Engine      │  │ (PDF/Excel)      │   │    │
+│  │  └──────────────┘  └──────────────┘  └──────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                              │                                        │
+└──────────────────────────────┼──────────────────────────────────────┘
+                               │
+              ┌────────────────┴────────────────┐
+              ▼                                 ▼
+    ┌──────────────────┐             ┌──────────────────┐
+    │     MySQL        │             │     MongoDB      │
+    │  (Core Data)     │             │  (Audit Logs)    │
+    │  - Users         │             │  - Action Logs   │
+    │  - Transactions  │             │  - History       │
+    │  - Batches       │             │  - JSON Blobs    │
+    └──────────────────┘             └──────────────────┘
+```
+
+---
+
+## 2. Database Design
+
+We will use a **Polyglot Persistence** approach:
+*   **MySQL:** For structured financial data (ACID compliance is crucial for money)
+*   **MongoDB:** For flexible, high-volume audit logs
+
+### 2.1 MySQL Schema
+
+#### Table 1: `users` (Authentication)
+```sql
+CREATE TABLE users (
+    user_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    role ENUM('ADMIN', 'AUDITOR', 'OPERATOR') DEFAULT 'OPERATOR',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+```
+
+#### Table 2: `transactions` (System Records / Master Data)
+```sql
+CREATE TABLE transactions (
+    transaction_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    reference_number VARCHAR(50) UNIQUE NOT NULL,  -- Unique Key for matching
+    amount DECIMAL(15, 2) NOT NULL,
+    transaction_date DATE NOT NULL,
+    description VARCHAR(255),
+    status ENUM('PENDING', 'MATCHED', 'MISMATCHED', 'DUPLICATE') DEFAULT 'PENDING',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by BIGINT,
+    FOREIGN KEY (created_by) REFERENCES users(user_id)
+);
+```
+
+#### Table 3: `upload_batches` (Grouping uploaded files)
+```sql
+CREATE TABLE upload_batches (
+    batch_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    filename VARCHAR(255) NOT NULL,
+    upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    total_records INT,
+    matched_count INT DEFAULT 0,
+    mismatched_count INT DEFAULT 0,
+    uploaded_by BIGINT,
+    FOREIGN KEY (uploaded_by) REFERENCES users(user_id)
+);
+```
+
+#### Table 4: `reconciliation_results` (Linking System vs Upload)
+```sql
+CREATE TABLE reconciliation_results (
+    result_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    batch_id BIGINT,
+    transaction_id BIGINT,  -- Reference to system record
+    uploaded_reference VARCHAR(50),
+    uploaded_amount DECIMAL(15, 2),
+    status ENUM('MATCHED', 'AMOUNT_MISMATCH', 'DATE_MISMATCH', 'NOT_FOUND', 'DUPLICATE'),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (batch_id) REFERENCES upload_batches(batch_id),
+    FOREIGN KEY (transaction_id) REFERENCES transactions(transaction_id)
+);
+```
+
+### 2.2 MongoDB Schema (Audit Logs)
+
+Collection: `audit_logs`
+
+```json
+{
+  "_id": "ObjectId",
+  "action": "CREATE | UPDATE | DELETE | LOGIN | UPLOAD",
+  "entityType": "USER | TRANSACTION | BATCH",
+  "entityId": "12345",
+  "userId": "user_001",
+  "userName": "john.doe",
+  "ipAddress": "192.168.1.100",
+  "oldValue": {
+    "amount": 100.00,
+    "status": "PENDING"
+  },
+  "newValue": {
+    "amount": 200.00,
+    "status": "MATCHED"
+  },
+  "timestamp": "2024-01-15T10:30:00Z",
+  "details": "Manual adjustment made to transaction amount"
+}
+```
+
+---
+
+## 3. API Design (REST Endpoints)
+
+### 3.1 Authentication APIs
+| Method | Endpoint | Description | Access |
+|--------|----------|-------------|--------|
+| POST | `/api/auth/login` | Login and get JWT Token | Public |
+| POST | `/api/auth/register` | Register new user | Admin |
+| GET | `/api/auth/me` | Get current user details | Authenticated |
+
+### 3.2 Transaction APIs
+| Method | Endpoint | Description | Access |
+|--------|----------|-------------|--------|
+| GET | `/api/transactions` | List all system transactions (paginated) | Auditor |
+| POST | `/api/transactions` | Add a single transaction manually | Operator |
+| GET | `/api/transactions/{id}` | Get details of specific transaction | Auditor |
+| PUT | `/api/transactions/{id}` | Update transaction details | Operator |
+
+### 3.3 Reconciliation & Upload APIs
+| Method | Endpoint | Description | Access |
+|--------|----------|-------------|--------|
+| POST | `/api/upload` | Upload CSV/Excel file | Operator |
+| GET | `/api/reconciliation/status/{batchId}` | Check processing status | Operator |
+| GET | `/api/reconciliation/results/{batchId}` | Get matched/mismatched results | Auditor |
+| POST | `/api/reconciliation/run` | Trigger manual reconciliation | Operator |
+
+### 3.4 Audit & Report APIs
+| Method | Endpoint | Description | Access |
+|--------|----------|-------------|--------|
+| GET | `/api/audit/logs` | Fetch audit logs (filterable by date/user) | Admin/Auditor |
+| GET | `/api/reports/reconciliation/{batchId}` | Generate PDF report | Auditor |
+
+---
+
+## 4. Component Design (The "How")
+
+### 4.1 Spring Boot Project Structure
+```text
+src/
+├── main/
+│   ├── java/com/audit/reconciliation/
+│   │   ├── config/           # Security, Database configs
+│   │   ├── controller/       # REST API endpoints
+│   │   ├── service/          # Business logic
+│   │   ├── repository/       # Database queries
+│   │   ├── model/            # Entity classes (Java Objects)
+│   │   ├── dto/              # Data Transfer Objects
+│   │   ├── exception/        # Error handling
+│   │   └── util/             # Helper classes
+│   └── resources/
+│       ├── application.yml   # Configuration
+│       └── static/           # Frontend build (if bundled)
+```
+
+### 4.2 Key Service Logic
+
+#### A. File Upload Service (Pseudo-code)
+```java
+@Service
+public class FileUploadService {
+
+    public Batch processFile(MultipartFile file, User user) {
+        // Step 1: Validate file type (CSV or XLSX)
+        if (!isValidFile(file)) {
+            throw new InvalidFileException("Only CSV/Excel allowed");
+        }
+
+        // Step 2: Parse file (Using Apache POI or OpenCSV)
+        List<TransactionDTO> uploadedData = parser.parse(file);
+
+        // Step 3: Save batch record to MySQL
+        Batch batch = saveBatchMetadata(file.getOriginalFilename(), user);
+
+        // Step 4: Trigger async processing
+        reconciliationEngine.processAsync(batch.getId(), uploadedData);
+
+        return batch;
+    }
+}
+```
+
+#### B. Matching Engine (The Core Logic)
+```java
+@Service
+public class MatchingEngine {
+
+    public void processReconciliation(Long batchId, List<TransactionDTO> uploadedData) {
+        for (TransactionDTO uploadedTx : uploadedData) {
+            // 1. Find exact match in MySQL by reference number
+            Transaction systemTx = transactionRepo.findByRefNumber(uploadedTx.getRef());
+
+            if (systemTx == null) {
+                // NOT FOUND in system
+                saveResult(batchId, uploadedTx, "NOT_FOUND");
+            } else if (systemTx.getAmount().equals(uploadedTx.getAmount())) {
+                // PERFECT MATCH
+                saveResult(batchId, systemTx, uploadedTx, "MATCHED");
+            } else {
+                // AMOUNT MISMATCH
+                saveResult(batchId, systemTx, uploadedTx, "AMOUNT_MISMATCH");
+            }
+
+            // 2. Log EVERYTHING to MongoDB
+            auditService.log("RECONCILIATION", user, "BATCH", batchId);
+        }
+    }
+}
+```
+
+#### C. Audit Service (MongoDB Logging)
+```java
+@Service
+public class AuditService {
+
+    @Autowired
+    private AuditLogRepository auditRepo;
+
+    public void log(String action, User user, String entityType, String entityId) {
+        AuditLog log = new AuditLog();
+        log.setAction(action);
+        log.setUserId(user.getUserId());
+        log.setUserName(user.getUsername());
+        log.setEntityType(entityType);
+        log.setEntityId(entityId);
+        log.setTimestamp(LocalDateTime.now());
+        log.setIpAddress(getClientIP()); // From HttpServletRequest
+
+        auditRepo.save(log); // Saves to MongoDB
+    }
+}
+```
+
+---
+
+## 5. Security Design
+
+### 5.1 Authentication Flow (JWT)
+```
+┌──────────┐     ┌─────────────┐     ┌──────────────┐     ┌─────────┐
+│  User    │────▶│  Login API  │────▶│ Validate     │────▶│ Generate│
+│ (React)  │     │  /auth/login│     │ Credentials  │     │  JWT    │
+└──────────┘     └─────────────┘     └──────────────┘     └────┬────┘
+                                                                  │
+┌──────────┐     ┌─────────────┐     ┌──────────────┐            │
+│  Store   │◀────│  Receive    │◀────│  Send JWT    │◀───────────┘
+│  Token   │     │  Token      │     │  in Header   │
+└──────────┘     └─────────────┘     └──────────────┘
+
+Header: Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
+```
+
+### 5.2 Spring Security Configuration
+```java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    @Bean
+    public JwtAuthenticationFilter jwtFilter() {
+        return new JwtAuthenticationFilter(jwtUtil);
+    }
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+            .csrf(csrf -> csrf.disable())
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/auth/**").permitAll()
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                .anyRequest().authenticated()
+            )
+            .addFilterBefore(jwtFilter(), UsernamePasswordAuthenticationFilter.class);
+
+        return http.build();
+    }
+}
+```
+
+---
+
+## 6. Data Flow Diagrams
+
+### 6.1 Upload & Reconciliation Flow
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   User      │     │   Backend   │     │  Algorithm  │     │  Database   │
+│  Uploads    │────▶│  Receives   │────▶│   Matches   │────▶│   Stores    │
+│  CSV File   │     │  File       │     │   Data      │     │   Results   │
+└─────────────┘     └──────┬──────┘     └──────┬──────┘     └──────┬──────┘
+                           │                   │                   │
+                           ▼                   ▼                   ▼
+                    ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+                    │  Validate   │     │  Compare    │     │  Return     │
+                    │  Format     │     │  Ref # &    │     │  Summary    │
+                    │             │     │  Amount     │     │  Report     │
+                    └─────────────┘     └─────────────┘     └─────────────┘
+```
+
+---
+
+## 7. Frontend Architecture (React/Angular)
+
+### 7.1 Component Hierarchy
+```
+App
+├── LoginPage
+├── DashboardLayout
+│   ├── Sidebar / Navigation
+│   ├── Header (User Profile, Logout)
+│   └── Main Content
+│       ├── Dashboard (Cards: Total Tx, Matched, Mismatched)
+│       ├── UploadModule
+│       │   ├── FileDropZone
+│       │   └── UploadProgressBar
+│       ├── TransactionTable
+│       │   ├── FilterBar
+│       │   └── DataGrid (with Pagination)
+│       ├── ReconciliationView
+│       │   ├── MatchedList
+│       │   ├── MismatchedList
+│       │   └── DisputeActions
+│       └── AuditLogViewer
+│           ├── DateRangePicker
+│           └── LogTable
+```
+
+### 7.2 State Management (React Example)
+```javascript
+// Using React Context or Redux
+const AppState = {
+    user: { id: 1, name: "John", role: "AUDITOR" },
+    authToken: "eyJhbGci...",
+    transactions: [],
+    currentBatch: null,
+    auditLogs: []
+};
+```
+
+---
+
+## 8. Infrastructure & Deployment
+
+### 8.1 Development Environment (Docker)
+```yaml
+# docker-compose.yml
+version: '3.8'
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: reconciliation_db
+
+  mongodb:
+    image: mongo:6.0
+
+  backend:
+    build: ./backend
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+```
+
+### 8.2 Production Deployment (Simple)
+```
+                    ┌─────────────────┐
+                    │   AWS S3 Bucket │
+                    │  (File Storage) │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │   Load Balancer │
+                    └────────┬────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+     ┌────────▼────┐  ┌──────▼─────┐  ┌────▼────────┐
+     │  EC2 Instance 1 │  EC2 Instance 2 │  EC2 Instance 3 │
+     │  (Backend)      │  (Backend)      │  (Backend)      │
+     └────────┬────┘  └──────┬─────┘  └────┬────────┘
+              │              │              │
+              └──────────────┼──────────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+         ┌────▼────┐   ┌─────▼────┐   ┌─────▼────┐
+         │  RDS    │   │  MongoDB │   │   S3     │
+         │ (MySQL) │   │ Atlas    │   │ Static   │
+         └─────────┘   └──────────┘   └──────────┘
+```
+
+---
+
+## 9. Key Design Decisions & Justification
+
+| Decision | Rationale |
+| :--- | :--- |
+| **MySQL for Transactions** | Financial data requires ACID compliance (Atomicity). We cannot have half-matched transactions. |
+| **MongoDB for Audit** | Audit logs are unstructured, can have variable fields, and need high write throughput. |
+| **JWT for Auth** | Stateless authentication scales better for REST APIs than session-based auth. |
+| **Async Processing** | File reconciliation can take time. Processing it asynchronously (using `@Async` or Queues) prevents API timeouts. |
+| **Reference Number as Key** | Using a unique business key (Reference #) rather than internal IDs for matching. |
+
+---
+
+## 10. Next Steps for You (Action Plan)
+
+1.  **Setup Environment:**
+    *   Install IntelliJ/Eclipse + Spring Boot plugin
+    *   Install Node.js + VS Code
+    *   Install MySQL Workbench & MongoDB Compass
+
+2.  **Create

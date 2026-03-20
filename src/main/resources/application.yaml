@@ -1,0 +1,24 @@
+spring:
+  application:
+    name: ReconcileAuditSystem
+  datasource:
+    url: jdbc:mysql://localhost:3306/reconcile_audit_system
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: root
+    password: openmySQL0101
+    jpa:
+      hibernate:
+        ddl-auto: update
+      show-sql: true
+      properties:
+        hibernate:
+          dialect: org.hibernate.dialect.MySQLDialect
+
+#  server:
+#    servlet:
+#      context-path: /finance
+
+logging:
+  level:
+    org.springframework.security: DEBUG
+
