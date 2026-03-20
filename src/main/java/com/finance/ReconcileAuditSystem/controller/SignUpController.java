@@ -37,7 +37,8 @@ public String test(){
 
     @PostMapping("/up")
     public ResponseEntity<?> signup(@RequestBody SignUpRequestDTO signUpRequestDTO){
-        if(signUpRequestDTO!=null){
+
+        if(signUpRequestDTO!=null && !signUpRequestDTO.getUsername().isBlank() && !signUpRequestDTO.getEmail().isBlank() && !signUpRequestDTO.getPassword().isBlank() ){
             EndUsers endUsers = new EndUsers();
             endUsers.setUsername(signUpRequestDTO.getUsername());
             endUsers.setEmail(signUpRequestDTO.getEmail());
