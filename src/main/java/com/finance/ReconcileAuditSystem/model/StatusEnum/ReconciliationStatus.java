@@ -5,5 +5,6 @@ public enum ReconciliationStatus {
     AMOUNT_MISMATCH,
     DATE_MISMATCH,
     NOT_FOUND,
-    DUPLICATE
+    DUPLICATE,
+    MISMATCH
 }

@@ -2,9 +2,10 @@ package com.finance.ReconcileAuditSystem.repository;
 
 import com.finance.ReconcileAuditSystem.model.Documents.AuditLogs;
 import org.springframework.data.mongodb.repository.MongoRepository;
+import org.springframework.stereotype.Repository;
 
 import java.util.List;
-
+@Repository
 public interface AuditLogsRepository extends MongoRepository<AuditLogs, String> {
 
     List<AuditLogs> findByUserId(String userId);

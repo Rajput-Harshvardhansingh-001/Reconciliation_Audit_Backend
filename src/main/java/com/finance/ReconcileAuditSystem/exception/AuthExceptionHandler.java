@@ -1,4 +1,4 @@
-package com.finance.ReconcileAuditSystem.controller;
+package com.finance.ReconcileAuditSystem.exception;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
