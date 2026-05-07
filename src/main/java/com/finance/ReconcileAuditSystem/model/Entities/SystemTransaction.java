@@ -15,17 +15,16 @@ public class SystemTransaction {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-
-    @Column(name = "reference_no")
-    private String referenceNo;
+    @Column(name = "account_holder_name")
+    private String accountHolderName;
     @Column(name = "account_id")
     private String accountId;
 
-    private Double amount;   // deposits OR withdrawal
+    private String description;
 
-    private String type;     // CREDIT / DEBIT
+    private Double deposits;
+    private Double withdrawal;
+    private Double balance;
 
     private LocalDate date;
-
-    private String description;
 }

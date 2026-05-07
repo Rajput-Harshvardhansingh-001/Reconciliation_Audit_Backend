@@ -2,6 +2,7 @@ package com.finance.ReconcileAuditSystem.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.finance.ReconcileAuditSystem.service.FileProcess;
+import com.finance.ReconcileAuditSystem.service.SystemFileProcess;
 import com.opencsv.CSVReader;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.Row;
@@ -27,6 +28,9 @@ public class BusinessController {
 @Autowired
     FileProcess fileProcess;
 
+@Autowired
+    SystemFileProcess systemFileProcess;
+
     @PostMapping("/upload")
     public ResponseEntity<?> uploadFile(
             @RequestParam("file") MultipartFile file,
@@ -45,6 +49,34 @@ public class BusinessController {
             System.out.println("Mapping: " + mapping);
 
             fileProcess.processFile(file, mapping);
+
+            return ResponseEntity.ok("Processed successfully");
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500)
+                    .body("Processing failed: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/systemupload")
+    public ResponseEntity<?> uploadSystemFile(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "mapping", required = false) String mappingJson
+    ) {
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+
+            Map<String, String> mapping = new HashMap<>();
+
+            if (mappingJson != null && !mappingJson.isEmpty()) {
+                mapping = mapper.readValue(mappingJson, Map.class);
+            }
+
+            System.out.println("File: " + file.getOriginalFilename());
+            System.out.println("Mapping: " + mapping);
+
+            systemFileProcess.processFile(file, mapping);
 
             return ResponseEntity.ok("Processed successfully");
 

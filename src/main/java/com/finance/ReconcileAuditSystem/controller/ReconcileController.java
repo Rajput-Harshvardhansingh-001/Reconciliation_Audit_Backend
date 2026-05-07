@@ -7,6 +7,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+import java.util.Map;
+
 @RestController
 @RequestMapping("/reconcile")
 public class ReconcileController {
@@ -14,10 +17,8 @@ public class ReconcileController {
     @Autowired
     private ReconciliationService service;
 
-    @GetMapping("/run")
-    public String run() {
-        service.runReconciliation();
-        service.markDuplicates();
-        return "Reconciliation Completed";
+    @PostMapping("/run")
+    public List<Map<String, Object>> reconcile() {
+        return service.reconcile();
     }
 }
